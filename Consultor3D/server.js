@@ -1,18 +1,23 @@
+
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
-import OpenAI from "openai";
-
-dotenv.config();
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GEMINI_API_KEY, PORT as CONFIG_PORT } from "./config.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+let genAI;
+try {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  console.log("✅ Gemini client configured with API key");
+} catch (error) {
+  console.warn("⚠️  Gemini API key not configured. Chat functionality will be disabled.");
+  console.warn("💡 Configure GEMINI_API_KEY in config.js file to enable AI features");
+  genAI = null;
+}
 
 // prompt do consultor
 const SYSTEM_PROMPT = `
@@ -26,53 +31,32 @@ Seja objetivo, prático, use passos e exemplos. Quando útil, peça dados do usu
 
 // rota de chat
 app.post("/consultor", async (req, res) => {
+  if (!genAI) {
+    return res.status(503).json({ 
+      ok: false, 
+      error: "Serviço de IA não disponível. Configure GEMINI_API_KEY no arquivo config.js" 
+    });
+  }
   const { message, context } = req.body || {};
   try {
-    const response = await client.chat.completions.create({
-      model: "gpt-3.5-turbo", // troquei para compatibilidade garantida
-      temperature: 0.5,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...(Array.isArray(context) ? context : []),
-        { role: "user", content: message || "Me dê uma dica de estilo rápida." }
-      ]
-    });
-
-    const content = response.choices?.[0]?.message?.content ?? "Não consegui gerar a resposta agora.";
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    // Include context in the prompt for better response
+    const prompt = `${SYSTEM_PROMPT}\nContexto do usuário: ${JSON.stringify(context)}\n\nUsuário: ${message || "Me dê uma dica de estilo rápida."}`;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const content = response.text() || "Não consegui gerar a resposta agora.";
     res.json({ ok: true, text: content });
   } catch (err) {
-    console.error("Erro no /consultor:", err.message);
+    console.error("Erro no /consultor:", err); // Log detalhado do erro
     res.status(500).json({ ok: false, error: "Falha ao consultar IA." });
-  }
-});
-
-// rota de geração de imagem
-app.post("/generate-image", async (req, res) => {
-  const { occasion, faceShape, skinTone } = req.body || {};
-  try {
-    const prompt = `
-    Gere uma imagem estilizada de um homem em 3D:
-    - Ocasião: ${occasion || "casual"}
-    - Formato do rosto: ${faceShape || "não informado"}
-    - Tom de pele: ${skinTone || "não informado"}
-    `;
-
-    const result = await client.images.generate({
-      model: "gpt-image-1",
-      prompt,
-      size: "512x512"
-    });
-
-    const imageBase64 = result.data[0].b64_json;
-    res.json({ ok: true, imageBase64 });
-  } catch (err) {
-    console.error("Erro no /generate-image:", err.message);
-    res.status(500).json({ ok: false, error: "Falha ao gerar imagem." });
   }
 });
 
 // rota de healthcheck
 app.get("/ping", (_, res) => res.json({ ok: true, pong: true }));
 
-const PORT = process.env.PORT || 3000;
+const PORT = CONFIG_PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Server on http://localhost:${PORT}`));
+  
